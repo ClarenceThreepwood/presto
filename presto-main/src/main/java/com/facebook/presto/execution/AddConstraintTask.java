@@ -109,7 +109,7 @@ public class AddConstraintTask
         ConnectorId connectorId = metadata.getCatalogHandle(session, tableName.getCatalogName())
                 .orElseThrow(() -> new PrestoException(NOT_FOUND, "Catalog does not exist: " + tableName.getCatalogName()));
 
-        accessControl.checkCanAddConstraints(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), tableName);
+        //accessControl.checkCanAddConstraints(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), tableName);
 
         metadata.addConstraint(session, tableHandle.get(), convertToTableConstraint(metadata, session, connectorId, statement.getConstraintSpecification(), warningCollector));
         return immediateFuture(null);

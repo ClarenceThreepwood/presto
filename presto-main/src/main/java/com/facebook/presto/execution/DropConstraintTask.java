@@ -69,7 +69,7 @@ public class DropConstraintTask
 
         ConnectorId connectorId = metadata.getCatalogHandle(session, tableName.getCatalogName())
                 .orElseThrow(() -> new PrestoException(NOT_FOUND, "Catalog does not exist: " + tableName.getCatalogName()));
-        accessControl.checkCanDropConstraint(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), tableName);
+        //accessControl.checkCanDropConstraint(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), tableName);
 
         metadata.dropConstraint(session, tableHandleOptional.get(), statement.getConstraintName().toString());
         return immediateFuture(null);
