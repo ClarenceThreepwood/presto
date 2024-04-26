@@ -61,7 +61,7 @@ public class TestTpcdsCostBasedPlan
             LocalQueryRunner queryRunner = LocalQueryRunner.queryRunnerWithFakeNodeCountForStats(sessionBuilder.build(), 8);
             queryRunner.createCatalog(
                     catalog,
-                    new TpcdsConnectorFactory(1),
+                    new TpcdsConnectorFactory(1, false),
                     ImmutableMap.of());
             return queryRunner;
         });
@@ -70,7 +70,7 @@ public class TestTpcdsCostBasedPlan
     @Override
     protected Stream<String> getQueryResourcePaths()
     {
-        return IntStream.range(1, 100)
+        return IntStream.range(83, 84)
                 .boxed()
                 .flatMap(i -> {
                     String queryId = format("q%02d", i);

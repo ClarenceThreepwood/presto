@@ -34,6 +34,9 @@ import com.facebook.presto.sql.planner.Plan;
 import com.facebook.presto.sql.planner.PlannerUtils;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.iterative.IterativeOptimizer;
+import com.facebook.presto.sql.planner.iterative.Lookup;
+import com.facebook.presto.sql.planner.iterative.Memo;
+import com.facebook.presto.sql.planner.iterative.properties.LogicalPropertiesProviderImpl;
 import com.facebook.presto.sql.planner.optimizations.PlanNodeSearcher;
 import com.facebook.presto.sql.planner.optimizations.PlanOptimizer;
 import com.facebook.presto.sql.planner.optimizations.PlanOptimizerResult;
@@ -41,10 +44,12 @@ import com.facebook.presto.sql.planner.optimizations.StatsRecordingPlanOptimizer
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.SemiJoinNode;
 import com.facebook.presto.sql.planner.sanity.PlanChecker;
+import com.facebook.presto.sql.relational.FunctionResolution;
 import com.google.common.base.Splitter;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import static com.facebook.presto.SystemSessionProperties.getOptimizersToEnableVerboseRuntimeStats;
 import static com.facebook.presto.SystemSessionProperties.getQueryAnalyzerTimeout;
@@ -55,6 +60,7 @@ import static com.facebook.presto.common.RuntimeUnit.NANO;
 import static com.facebook.presto.spi.StandardErrorCode.QUERY_PLANNING_TIMEOUT;
 import static com.facebook.presto.sql.Optimizer.PlanStage.OPTIMIZED;
 import static com.facebook.presto.sql.Optimizer.PlanStage.OPTIMIZED_AND_VALIDATED;
+import static com.facebook.presto.sql.planner.iterative.Lookup.noLookup;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
@@ -158,7 +164,15 @@ public class Optimizer
         if (explain || isPrintStatsForNonJoinQuery(session) ||
                 PlanNodeSearcher.searchFrom(root).where(node ->
                         (node instanceof JoinNode) || (node instanceof SemiJoinNode)).matches()) {
-            StatsProvider statsProvider = new CachingStatsProvider(statsCalculator, session, types);
+            Optional<Memo> memo = Optional.empty();
+            Lookup lookup = noLookup();
+            if (SystemSessionProperties.isExploitConstraints(session)) {
+                Memo finalMemo = new Memo(idAllocator, root, Optional.of(new LogicalPropertiesProviderImpl(new FunctionResolution(metadata.getFunctionAndTypeManager().getFunctionAndTypeResolver()))));
+                lookup = Lookup.from(planNode -> Stream.of(finalMemo.resolve(planNode)));
+                memo = Optional.of(finalMemo);
+            }
+
+            StatsProvider statsProvider = new CachingStatsProvider(statsCalculator, memo, lookup, session, types);
             CostProvider costProvider = new CachingCostProvider(costCalculator, statsProvider, Optional.empty(), session);
             return StatsAndCosts.create(root, statsProvider, costProvider);
         }

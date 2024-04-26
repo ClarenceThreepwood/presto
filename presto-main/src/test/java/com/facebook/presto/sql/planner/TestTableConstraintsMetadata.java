@@ -45,9 +45,9 @@ import static java.util.Collections.emptyMap;
 public class TestTableConstraintsMetadata
         extends TpchMetadata
 {
-    public TestTableConstraintsMetadata(String connectorId, ColumnNaming columnNaming, boolean predicatePushdownEnabled, boolean partitioningEnabled)
+    public TestTableConstraintsMetadata(String connectorId, ColumnNaming columnNaming, boolean predicatePushdownEnabled, boolean partitioningEnabled, boolean tableConstraintsEnabled)
     {
-        super(connectorId, columnNaming, predicatePushdownEnabled, partitioningEnabled);
+        super(connectorId, columnNaming, predicatePushdownEnabled, partitioningEnabled, tableConstraintsEnabled);
     }
 
     private static ConnectorTableMetadata getTableConstraintsMetadata(String schemaName, TpchTable<?> tpchTable, ColumnNaming columnNaming)

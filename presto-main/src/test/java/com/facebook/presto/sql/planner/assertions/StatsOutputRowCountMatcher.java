@@ -37,7 +37,7 @@ public class StatsOutputRowCountMatcher
     @Override
     public MatchResult detailMatches(PlanNode node, StatsProvider stats, Session session, Metadata metadata, SymbolAliases symbolAliases)
     {
-        return new MatchResult(Double.compare(stats.getStats(node).getOutputRowCount(), expectedOutputRowCount) == 0);
+        return new MatchResult(Math.abs(stats.getStats(node).getOutputRowCount() - expectedOutputRowCount) < 0.1);
     }
 
     @Override

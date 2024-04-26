@@ -105,6 +105,11 @@ public class Memo
         return groups.get(group).logicalProperties;
     }
 
+    public Optional<LogicalPropertiesProvider> getLogicalPropertiesProvider()
+    {
+        return logicalPropertiesProvider;
+    }
+
     public PlanNode getNode(int group)
     {
         return getGroup(group).membership;

@@ -36,16 +36,18 @@ public class TpcdsConnectorFactory
         implements ConnectorFactory
 {
     private final int defaultSplitsPerNode;
+    private final boolean tableConstraintsEnabled;
 
     public TpcdsConnectorFactory()
     {
-        this(Runtime.getRuntime().availableProcessors());
+        this(Runtime.getRuntime().availableProcessors(), false);
     }
 
-    public TpcdsConnectorFactory(int defaultSplitsPerNode)
+    public TpcdsConnectorFactory(int defaultSplitsPerNode, boolean tableConstraintsEnabled)
     {
         checkState(defaultSplitsPerNode > 0, "default splits per node is negative");
         this.defaultSplitsPerNode = defaultSplitsPerNode;
+        this.tableConstraintsEnabled = tableConstraintsEnabled;
     }
 
     @Override
@@ -76,7 +78,7 @@ public class TpcdsConnectorFactory
             @Override
             public ConnectorMetadata getMetadata(ConnectorTransactionHandle transactionHandle)
             {
-                return new TpcdsMetadata();
+                return new TpcdsMetadata(tableConstraintsEnabled);
             }
 
             @Override

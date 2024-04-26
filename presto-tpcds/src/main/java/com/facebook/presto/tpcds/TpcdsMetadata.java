@@ -28,9 +28,12 @@ import com.facebook.presto.spi.ConnectorTableLayoutHandle;
 import com.facebook.presto.spi.ConnectorTableLayoutResult;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.Constraint;
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
+import com.facebook.presto.spi.constraints.PrimaryKeyConstraint;
+import com.facebook.presto.spi.constraints.TableConstraint;
 import com.facebook.presto.spi.statistics.TableStatistics;
 import com.facebook.presto.tpcds.statistics.TpcdsTableStatisticsFactory;
 import com.google.common.collect.ImmutableList;
@@ -40,6 +43,8 @@ import com.teradata.tpcds.Table;
 import com.teradata.tpcds.column.Column;
 import com.teradata.tpcds.column.ColumnType;
 
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -48,6 +53,7 @@ import java.util.Set;
 import static com.facebook.presto.common.type.CharType.createCharType;
 import static com.facebook.presto.common.type.DecimalType.createDecimalType;
 import static com.facebook.presto.common.type.VarcharType.createVarcharType;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_FOUND;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
@@ -63,14 +69,16 @@ public class TpcdsMetadata
 
     private final Set<String> tableNames;
     private final TpcdsTableStatisticsFactory tpcdsTableStatisticsFactory = new TpcdsTableStatisticsFactory();
+    private final boolean tableConstraintsEnabled;
 
-    public TpcdsMetadata()
+    public TpcdsMetadata(boolean tableConstraintsEnabled)
     {
         ImmutableSet.Builder<String> tableNames = ImmutableSet.builder();
         for (Table tpcdsTable : Table.getBaseTables()) {
             tableNames.add(tpcdsTable.getName().toLowerCase(ENGLISH));
         }
         this.tableNames = tableNames.build();
+        this.tableConstraintsEnabled = tableConstraintsEnabled;
     }
 
     @Override
@@ -134,17 +142,79 @@ public class TpcdsMetadata
         Table table = Table.getTable(tpcdsTableHandle.getTableName());
         String schemaName = scaleFactorSchemaName(tpcdsTableHandle.getScaleFactor());
 
-        return getTableMetadata(schemaName, table);
+        return getTableMetadata(schemaName, table, tableConstraintsEnabled);
     }
 
-    private static ConnectorTableMetadata getTableMetadata(String schemaName, Table tpcdsTable)
+    private static ConnectorTableMetadata getTableMetadata(String schemaName, Table tpcdsTable, boolean tableConstraintsEnabled)
     {
         ImmutableList.Builder<ColumnMetadata> columns = ImmutableList.builder();
+        Map<String, ColumnHandle> columnNameToHandleAssignments = new HashMap<>();
         for (Column column : tpcdsTable.getColumns()) {
-            columns.add(new ColumnMetadata(column.getName(), getPrestoType(column.getType())));
+            ColumnMetadata columnMetadata = new ColumnMetadata(column.getName(), getPrestoType(column.getType()));
+            columns.add(columnMetadata);
+            columnNameToHandleAssignments.put(columnMetadata.getName(), new TpcdsColumnHandle(columnMetadata.getName(), columnMetadata.getType()));
         }
         SchemaTableName tableName = new SchemaTableName(schemaName, tpcdsTable.getName());
+        if (tableConstraintsEnabled) {
+            return new ConnectorTableMetadata(tableName, columns.build(), ImmutableMap.of(), Optional.empty(), getTableConstraints(tpcdsTable), columnNameToHandleAssignments);
+        }
         return new ConnectorTableMetadata(tableName, columns.build());
+    }
+
+    private static List<TableConstraint<String>> getTableConstraints(Table tpcdsTable)
+    {
+        switch (tpcdsTable.getName()) {
+            case "call_center":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("call_center_pk"), new LinkedHashSet<>(ImmutableList.of("cc_call_center_sk")), true, true, true));
+            case "catalog_page":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("catalog_page_pk"), new LinkedHashSet<>(ImmutableList.of("cp_catalog_page_sk")), true, true, true));
+            case "catalog_returns":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("catalog_returns_pk"), new LinkedHashSet<>(ImmutableList.of("cr_item_sk", "cr_order_number")), true, true, true));
+            case "catalog_sales":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("catalog_sales_pk"), new LinkedHashSet<>(ImmutableList.of("cs_item_sk", "cs_order_number")), true, true, true));
+            case "customer":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("customer_pk"), new LinkedHashSet<>(ImmutableList.of("c_customer_sk")), true, true, true));
+            case "customer_address":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("customer_address_pk"), new LinkedHashSet<>(ImmutableList.of("ca_address_sk")), true, true, true));
+            case "customer_demographics":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("customer_demographics_pk"), new LinkedHashSet<>(ImmutableList.of("cd_demo_sk")), true, true, true));
+            case "date_dim":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("date_dim_pk"), new LinkedHashSet<>(ImmutableList.of("d_date_sk")), true, true, true));
+            case "household_demographics":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("household_demographics_pk"), new LinkedHashSet<>(ImmutableList.of("hd_demo_sk")), true, true, true));
+            case "income_band":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("income_band_pk"), new LinkedHashSet<>(ImmutableList.of("ib_income_band_sk")), true, true, true));
+            case "inventory":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("inventory_pk"), new LinkedHashSet<>(ImmutableList.of("inv_date_sk", "inv_item_sk", "inv_warehouse_sk")), true, true, true));
+            case "item":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("item_pk"), new LinkedHashSet<>(ImmutableList.of("i_item_sk")), true, true, true));
+            case "promotion":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("promotion_pk"), new LinkedHashSet<>(ImmutableList.of("p_promo_sk")), true, true, true));
+            case "reason":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("reason_pk"), new LinkedHashSet<>(ImmutableList.of("r_reason_sk")), true, true, true));
+            case "ship_mode":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("ship_mode_pk"), new LinkedHashSet<>(ImmutableList.of("sm_ship_mode_sk")), true, true, true));
+            case "store":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("store_pk"), new LinkedHashSet<>(ImmutableList.of("s_store_sk")), true, true, true));
+            case "store_returns":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("store_returns_pk"), new LinkedHashSet<>(ImmutableList.of("sr_item_sk", "sr_ticket_number")), true, true, true));
+            case "store_sales":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("store_sales_pk"), new LinkedHashSet<>(ImmutableList.of("ss_item_sk", "ss_ticket_number")), true, true, true));
+            case "time_dim":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("time_dim_pk"), new LinkedHashSet<>(ImmutableList.of("t_time_sk")), true, true, true));
+            case "warehouse":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("warehouse_pk"), new LinkedHashSet<>(ImmutableList.of("w_warehouse_sk")), true, true, true));
+            case "web_page":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("web_page_pk"), new LinkedHashSet<>(ImmutableList.of("wp_web_page_sk")), true, true, true));
+            case "web_returns":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("web_returns_pk"), new LinkedHashSet<>(ImmutableList.of("wr_order_number", "wr_item_sk")), true, true, true));
+            case "web_sales":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("web_sales_pk"), new LinkedHashSet<>(ImmutableList.of("ws_item_sk", "ws_order_number")), true, true, true));
+            case "web_site":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("web_site_pk"), new LinkedHashSet<>(ImmutableList.of("web_site_sk")), true, true, true));
+            default:
+                throw new PrestoException(NOT_FOUND, format("Unknown tpcds table : %s", tpcdsTable.getName()));
+        }
     }
 
     @Override
@@ -189,7 +259,7 @@ public class TpcdsMetadata
         for (String schemaName : getSchemaNames(session, Optional.ofNullable(prefix.getSchemaName()))) {
             for (Table tpcdsTable : Table.getBaseTables()) {
                 if (prefix.getTableName() == null || tpcdsTable.getName().equals(prefix.getTableName())) {
-                    ConnectorTableMetadata tableMetadata = getTableMetadata(schemaName, tpcdsTable);
+                    ConnectorTableMetadata tableMetadata = getTableMetadata(schemaName, tpcdsTable, tableConstraintsEnabled);
                     tableColumns.put(new SchemaTableName(schemaName, tpcdsTable.getName()), tableMetadata.getColumns());
                 }
             }

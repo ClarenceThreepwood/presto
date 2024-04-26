@@ -90,6 +90,11 @@ public final class CachingStatsProvider
         }
     }
 
+    public Optional<Memo> getMemo()
+    {
+        return memo;
+    }
+
     private PlanNodeStatsEstimate getGroupStats(GroupReference groupReference)
     {
         int group = groupReference.getGroupId();

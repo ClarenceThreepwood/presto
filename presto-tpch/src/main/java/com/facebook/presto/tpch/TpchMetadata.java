@@ -30,10 +30,13 @@ import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.ConnectorTablePartitioning;
 import com.facebook.presto.spi.Constraint;
 import com.facebook.presto.spi.LocalProperty;
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.SortingProperty;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
+import com.facebook.presto.spi.constraints.PrimaryKeyConstraint;
+import com.facebook.presto.spi.constraints.TableConstraint;
 import com.facebook.presto.spi.statistics.ColumnStatistics;
 import com.facebook.presto.spi.statistics.ComputedStatistics;
 import com.facebook.presto.spi.statistics.DoubleRange;
@@ -64,6 +67,8 @@ import io.airlift.tpch.TpchTable;
 
 import java.time.LocalDate;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -76,6 +81,7 @@ import static com.facebook.presto.common.type.DateType.DATE;
 import static com.facebook.presto.common.type.DoubleType.DOUBLE;
 import static com.facebook.presto.common.type.IntegerType.INTEGER;
 import static com.facebook.presto.common.type.VarcharType.createVarcharType;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_FOUND;
 import static com.facebook.presto.spi.statistics.TableStatisticType.ROW_COUNT;
 import static com.facebook.presto.tpch.util.PredicateUtils.convertToPredicate;
 import static com.facebook.presto.tpch.util.PredicateUtils.filterOutColumnFromPredicate;
@@ -83,6 +89,8 @@ import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Maps.asMap;
 import static io.airlift.tpch.OrderColumn.ORDER_STATUS;
+import static io.airlift.tpch.TpchTable.PART;
+import static java.lang.String.format;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.emptyMap;
 import static java.util.Objects.requireNonNull;
@@ -127,13 +135,14 @@ public class TpchMetadata
     private final StatisticsEstimator statisticsEstimator;
     private final boolean predicatePushdownEnabled;
     private final boolean partitioningEnabled;
+    private final boolean tableConstraintsEnabled;
 
     public TpchMetadata(String connectorId)
     {
-        this(connectorId, ColumnNaming.SIMPLIFIED, true, true);
+        this(connectorId, ColumnNaming.SIMPLIFIED, true, true, true);
     }
 
-    public TpchMetadata(String connectorId, ColumnNaming columnNaming, boolean predicatePushdownEnabled, boolean partitioningEnabled)
+    public TpchMetadata(String connectorId, ColumnNaming columnNaming, boolean predicatePushdownEnabled, boolean partitioningEnabled, boolean tableConstraintsEnabled)
     {
         ImmutableSet.Builder<String> tableNames = ImmutableSet.builder();
         for (TpchTable<?> tpchTable : TpchTable.getTables()) {
@@ -145,6 +154,7 @@ public class TpchMetadata
         this.predicatePushdownEnabled = predicatePushdownEnabled;
         this.partitioningEnabled = partitioningEnabled;
         this.statisticsEstimator = createStatisticsEstimator();
+        this.tableConstraintsEnabled = tableConstraintsEnabled;
     }
 
     private static StatisticsEstimator createStatisticsEstimator()
@@ -218,7 +228,7 @@ public class TpchMetadata
                 unenforcedConstraint = filterOutColumnFromPredicate(constraint.getSummary(), toColumnHandle(OrderColumn.ORDER_STATUS));
             }
         }
-        else if (predicatePushdownEnabled && tableHandle.getTableName().equals(TpchTable.PART.getTableName())) {
+        else if (predicatePushdownEnabled && tableHandle.getTableName().equals(PART.getTableName())) {
             predicate = toTupleDomain(ImmutableMap.of(
                     toColumnHandle(PartColumn.CONTAINER),
                     filterValues(PART_CONTAINER_NULLABLE_VALUES, PartColumn.CONTAINER, constraint),
@@ -281,19 +291,50 @@ public class TpchMetadata
         TpchTable<?> tpchTable = TpchTable.getTable(tpchTableHandle.getTableName());
         String schemaName = scaleFactorSchemaName(tpchTableHandle.getScaleFactor());
 
-        return getTableMetadata(schemaName, tpchTable, columnNaming);
+        return getTableMetadata(schemaName, tpchTable, columnNaming, tableConstraintsEnabled);
     }
 
-    private static ConnectorTableMetadata getTableMetadata(String schemaName, TpchTable<?> tpchTable, ColumnNaming columnNaming)
+    private static ConnectorTableMetadata getTableMetadata(String schemaName, TpchTable<?> tpchTable, ColumnNaming columnNaming, boolean tableConstraintsEnabled)
     {
         ImmutableList.Builder<ColumnMetadata> columns = ImmutableList.builder();
+        Map<String, ColumnHandle> columnNameToHandleAssignments = new HashMap<>();
         for (TpchColumn<? extends TpchEntity> column : tpchTable.getColumns()) {
-            columns.add(new ColumnMetadata(columnNaming.getName(column), getPrestoType(column), false, null, null, false, emptyMap()));
+            ColumnMetadata columnMetadata = new ColumnMetadata(columnNaming.getName(column), getPrestoType(column), false, null, null, false, emptyMap());
+            columns.add(columnMetadata);
+            columnNameToHandleAssignments.put(columnMetadata.getName(), new TpchColumnHandle(columnMetadata.getName(), columnMetadata.getType()));
         }
         columns.add(new ColumnMetadata(ROW_NUMBER_COLUMN_NAME, BIGINT, null, true));
 
         SchemaTableName tableName = new SchemaTableName(schemaName, tpchTable.getTableName());
+
+        if (tableConstraintsEnabled) {
+            return new ConnectorTableMetadata(tableName, columns.build(), ImmutableMap.of(), Optional.empty(), getTableConstraints(tpchTable), columnNameToHandleAssignments);
+        }
         return new ConnectorTableMetadata(tableName, columns.build());
+    }
+
+    private static List<TableConstraint<String>> getTableConstraints(TpchTable<?> tpchTable)
+    {
+        switch (tpchTable.getTableName()) {
+            case "part":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("part_pk"), new LinkedHashSet<>(ImmutableList.of("partkey")), true, true, true));
+            case "supplier":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("supplier_pk"), new LinkedHashSet<>(ImmutableList.of("suppkey")), true, true, true));
+            case "partsupp":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("partsupp_pk"), new LinkedHashSet<>(ImmutableList.of("partkey", "suppkey")), true, true, true));
+            case "customer":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("customer_pk"), new LinkedHashSet<>(ImmutableList.of("custkey")), true, true, true));
+            case "orders":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("orders_pk"), new LinkedHashSet<>(ImmutableList.of("orderkey")), true, true, true));
+            case "lineitem":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("lineitem_pk"), new LinkedHashSet<>(ImmutableList.of("orderkey", "linenumber")), true, true, true));
+            case "nation":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("nation_pk"), new LinkedHashSet<>(ImmutableList.of("nationkey")), true, true, true));
+            case "region":
+                return ImmutableList.of(new PrimaryKeyConstraint<>(Optional.of("region_pk"), new LinkedHashSet<>(ImmutableList.of("regionkey")), true, true, true));
+            default:
+                throw new PrestoException(NOT_FOUND, format("Unknown tpch table : %s", tpchTable.getTableName()));
+        }
     }
 
     @Override
@@ -313,7 +354,7 @@ public class TpchMetadata
         for (String schemaName : getSchemaNames(session, Optional.ofNullable(prefix.getSchemaName()))) {
             for (TpchTable<?> tpchTable : TpchTable.getTables()) {
                 if (prefix.getTableName() == null || tpchTable.getTableName().equals(prefix.getTableName())) {
-                    ConnectorTableMetadata tableMetadata = getTableMetadata(schemaName, tpchTable, columnNaming);
+                    ConnectorTableMetadata tableMetadata = getTableMetadata(schemaName, tpchTable, columnNaming, tableConstraintsEnabled);
                     tableColumns.put(new SchemaTableName(schemaName, tpchTable.getTableName()), tableMetadata.getColumns());
                 }
             }
@@ -465,7 +506,7 @@ public class TpchMetadata
                 return column;
             }
         }
-        throw new IllegalArgumentException(String.format("Table %s does not have column %s", tableMetadata.getTable(), columnName));
+        throw new IllegalArgumentException(format("Table %s does not have column %s", tableMetadata.getTable(), columnName));
     }
 
     @Override
