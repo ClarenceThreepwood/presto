@@ -48,6 +48,11 @@ public class TestTpchCostBasedPlan
 
     public TestTpchCostBasedPlan()
     {
+        this(false);
+    }
+
+    public TestTpchCostBasedPlan(boolean tableConstraintsEnabled)
+    {
         super(() -> {
             String catalog = "local";
             SessionBuilder sessionBuilder = testSessionBuilder()
@@ -61,7 +66,7 @@ public class TestTpchCostBasedPlan
             LocalQueryRunner queryRunner = LocalQueryRunner.queryRunnerWithFakeNodeCountForStats(sessionBuilder.build(), 8);
             queryRunner.createCatalog(
                     catalog,
-                    new TpchConnectorFactory(1, false, false),
+                    new TpchConnectorFactory(1, false, false, tableConstraintsEnabled),
                     ImmutableMap.of(TPCH_COLUMN_NAMING_PROPERTY, ColumnNaming.SIMPLIFIED.name()));
             return queryRunner;
         });

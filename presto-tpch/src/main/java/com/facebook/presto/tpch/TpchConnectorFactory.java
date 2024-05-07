@@ -37,6 +37,7 @@ public class TpchConnectorFactory
     private final int defaultSplitsPerNode;
     private final boolean predicatePushdownEnabled;
     private final boolean partitioningEnabled;
+    private final boolean tableConstraintsEnabled;
 
     public TpchConnectorFactory()
     {
@@ -45,14 +46,15 @@ public class TpchConnectorFactory
 
     public TpchConnectorFactory(int defaultSplitsPerNode)
     {
-        this(defaultSplitsPerNode, true, true);
+        this(defaultSplitsPerNode, true, true, false);
     }
 
-    public TpchConnectorFactory(int defaultSplitsPerNode, boolean predicatePushdownEnabled, boolean partitioningEnabled)
+    public TpchConnectorFactory(int defaultSplitsPerNode, boolean predicatePushdownEnabled, boolean partitioningEnabled, boolean tableConstraintsEnabled)
     {
         this.defaultSplitsPerNode = defaultSplitsPerNode;
         this.predicatePushdownEnabled = predicatePushdownEnabled;
         this.partitioningEnabled = partitioningEnabled;
+        this.tableConstraintsEnabled = tableConstraintsEnabled;
     }
 
     @Override
@@ -85,7 +87,7 @@ public class TpchConnectorFactory
             @Override
             public ConnectorMetadata getMetadata(ConnectorTransactionHandle transaction)
             {
-                return new TpchMetadata(catalogName, columnNaming, predicatePushdownEnabled, isPartitioningEnabled(properties));
+                return new TpchMetadata(catalogName, columnNaming, predicatePushdownEnabled, isPartitioningEnabled(properties), tableConstraintsEnabled);
             }
 
             @Override
@@ -126,5 +128,10 @@ public class TpchConnectorFactory
     protected boolean isPredicatePushdownEnabled()
     {
         return predicatePushdownEnabled;
+    }
+
+    protected boolean areTableConstraintsEnabled()
+    {
+        return tableConstraintsEnabled;
     }
 }

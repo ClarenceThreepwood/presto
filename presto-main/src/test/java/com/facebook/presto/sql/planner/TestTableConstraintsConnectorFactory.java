@@ -57,7 +57,7 @@ public class TestTableConstraintsConnectorFactory
             @Override
             public ConnectorMetadata getMetadata(ConnectorTransactionHandle transaction)
             {
-                return new TestTableConstraintsMetadata(catalogName, columnNaming, isPredicatePushdownEnabled(), isPartitioningEnabled(properties));
+                return new TestTableConstraintsMetadata(catalogName, columnNaming, isPredicatePushdownEnabled(), isPartitioningEnabled(properties), areTableConstraintsEnabled());
             }
 
             @Override

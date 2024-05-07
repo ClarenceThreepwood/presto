@@ -47,6 +47,11 @@ public class TestTpcdsCostBasedPlan
 
     public TestTpcdsCostBasedPlan()
     {
+        this(false);
+    }
+
+    public TestTpcdsCostBasedPlan(boolean tableConstraintsEnabled)
+    {
         super(() -> {
             String catalog = "local";
             Session.SessionBuilder sessionBuilder = testSessionBuilder()
@@ -61,7 +66,7 @@ public class TestTpcdsCostBasedPlan
             LocalQueryRunner queryRunner = LocalQueryRunner.queryRunnerWithFakeNodeCountForStats(sessionBuilder.build(), 8);
             queryRunner.createCatalog(
                     catalog,
-                    new TpcdsConnectorFactory(1),
+                    new TpcdsConnectorFactory(1, tableConstraintsEnabled),
                     ImmutableMap.of());
             return queryRunner;
         });
