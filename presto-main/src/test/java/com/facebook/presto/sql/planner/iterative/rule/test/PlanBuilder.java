@@ -545,6 +545,11 @@ public class PlanBuilder
                 enforcedConstraint);
     }
 
+    public TableScanNode tableScan(TableHandle tableHandle, List<VariableReferenceExpression> variables, Map<VariableReferenceExpression, ColumnHandle> assignments, List<TableConstraint<ColumnHandle>> tableConstraints)
+    {
+        return tableScan(tableHandle, variables, assignments, TupleDomain.all(), TupleDomain.all(), tableConstraints);
+    }
+
     public TableScanNode tableScan(
             TableHandle tableHandle,
             List<VariableReferenceExpression> variables,

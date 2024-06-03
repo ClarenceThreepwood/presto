@@ -78,6 +78,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static com.facebook.presto.SystemSessionProperties.EXPLOIT_CONSTRAINTS;
 import static com.facebook.presto.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
 import static com.facebook.presto.SystemSessionProperties.OPTIMIZE_METADATA_QUERIES;
 import static com.facebook.presto.SystemSessionProperties.OPTIMIZE_METADATA_QUERIES_CALL_THRESHOLD;
@@ -145,6 +146,8 @@ import static io.airlift.tpch.TpchTable.CUSTOMER;
 import static io.airlift.tpch.TpchTable.LINE_ITEM;
 import static io.airlift.tpch.TpchTable.NATION;
 import static io.airlift.tpch.TpchTable.ORDERS;
+import static io.airlift.tpch.TpchTable.PART_SUPPLIER;
+import static io.airlift.tpch.TpchTable.SUPPLIER;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static org.testng.Assert.assertFalse;
@@ -159,7 +162,7 @@ public class TestHiveLogicalPlanner
             throws Exception
     {
         return HiveQueryRunner.createQueryRunner(
-                ImmutableList.of(ORDERS, LINE_ITEM, CUSTOMER, NATION),
+                ImmutableList.of(ORDERS, LINE_ITEM, CUSTOMER, NATION, PART_SUPPLIER, SUPPLIER),
                 ImmutableMap.of("experimental.pushdown-subfields-enabled", "true",
                         "pushdown-subfields-from-lambda-enabled", "true"),
                 Optional.empty());
@@ -1956,6 +1959,178 @@ public class TestHiveLogicalPlanner
             queryRunner.execute("DROP TABLE IF EXISTS orders_partitioned_parquet");
             queryRunner.execute("DROP TABLE IF EXISTS variable_length_table");
         }
+    }
+
+    @Test
+    public void testCardinalityEstimationWithTableConstraints()
+    {
+        ImmutableList<String> addConstraintStmts = ImmutableList.<String>builder()
+                .add("ALTER TABLE nation ADD CONSTRAINT nation_pk PRIMARY KEY (nationkey)")
+                .add("ALTER TABLE partsupp ADD CONSTRAINT partsupp_pk PRIMARY KEY (partkey, suppkey)")
+                .add("ALTER TABLE customer ADD CONSTRAINT customer_pk PRIMARY KEY (custkey)")
+                .add("ALTER TABLE lineitem ADD CONSTRAINT lineitem_pk PRIMARY KEY (orderkey, linenumber)")
+                .add("ALTER TABLE orders ADD CONSTRAINT orders_pk PRIMARY KEY (orderkey)")
+                .add("ALTER TABLE supplier ADD CONSTRAINT supplier_pk PRIMARY KEY (suppkey)")
+                .build();
+        addConstraintStmts.forEach(stmt -> assertUpdate(getSession(), stmt));
+
+        Session constraintsDisabledSession = Session.builder(getQueryRunner().getDefaultSession())
+                .setSystemProperty(EXPLOIT_CONSTRAINTS, "false")
+                .build();
+        Session constraintsEnabledSession = Session.builder(getQueryRunner().getDefaultSession())
+                .setSystemProperty(EXPLOIT_CONSTRAINTS, "true")
+                .build();
+
+        String query = "SELECT Count(*)\n" +
+                "FROM   lineitem l,\n" +
+                "       partsupp ps\n" +
+                "WHERE  l.partkey = ps.partkey\n" +
+                "       AND l.suppkey = ps.suppkey";
+
+        assertPlan(constraintsDisabledSession,
+                query,
+                anyTree(
+                        join(
+                                anyTree(PlanMatchPattern.tableScan("lineitem")
+                                        .withOutputRowCount(60175)),
+                                anyTree(PlanMatchPattern.tableScan("partsupp")
+                                        .withOutputRowCount(8000)))
+                                .withOutputRowCount(219594.5)));
+        assertPlan(constraintsEnabledSession,
+                query,
+                anyTree(
+                        join(
+                                anyTree(PlanMatchPattern.tableScan("lineitem")
+                                        .withOutputRowCount(60175)),
+                                anyTree(PlanMatchPattern.tableScan("partsupp")
+                                        .withOutputRowCount(8000)))
+                                .withOutputRowCount(60175)));
+
+        // 3-way join
+        query = "SELECT count(*)\n" +
+                "FROM   lineitem l,\n" +
+                "       partsupp ps,\n" +
+                "       orders o\n" +
+                "WHERE  l.partkey = ps.partkey\n" +
+                "       AND l.suppkey = ps.suppkey\n" +
+                "       AND o.orderkey = l.orderkey ";
+
+        assertPlan(constraintsDisabledSession,
+                query,
+                anyTree(
+                        join(
+                                anyTree(
+                                        join(
+                                                anyTree(PlanMatchPattern.tableScan("lineitem")
+                                                        .withOutputRowCount(60175)),
+                                                anyTree(PlanMatchPattern.tableScan("orders")
+                                                        .withOutputRowCount(15000)))
+                                                .withOutputRowCount(58490.5)),
+                                anyTree(PlanMatchPattern.tableScan("partsupp")
+                                        .withOutputRowCount(8000)))
+                                .withOutputRowCount(213447.2)));
+        assertPlan(constraintsEnabledSession,
+                query,
+                anyTree(
+                        join(
+                                anyTree(
+                                        join(
+                                                anyTree(PlanMatchPattern.tableScan("lineitem")
+                                                        .withOutputRowCount(60175)),
+                                                anyTree(PlanMatchPattern.tableScan("partsupp")
+                                                        .withOutputRowCount(8000)))
+                                                .withOutputRowCount(60175)),
+                                anyTree(PlanMatchPattern.tableScan("orders")
+                                        .withOutputRowCount(15000)))
+                                .withOutputRowCount(60175)));
+
+        // 6 tables with relative size estimates
+        query = "SELECT count(*)\n" +
+                "FROM   lineitem l,\n" +
+                "       partsupp ps,\n" +
+                "       orders o,\n" +
+                "       customer c,\n" +
+                "       nation n,\n" +
+                "       supplier s\n" +
+                "WHERE  l.partkey = ps.partkey\n" +
+                "       AND l.suppkey = ps.suppkey\n" +
+                "       AND o.orderkey = l.orderkey\n" +
+                "       AND s.suppkey = ps.suppkey\n" +
+                "       AND s.nationkey = n.nationkey\n" +
+                "       AND o.custkey = c.custkey\n" +
+                "       AND c.nationkey = n.nationkey\n" +
+                "       AND n.NAME = 'UNITED STATES'";
+
+        assertPlan(constraintsDisabledSession,
+                query,
+                anyTree(
+                        join(
+                                anyTree(PlanMatchPattern.tableScan("partsupp")
+                                        .withOutputRowCount(8000)),
+                                anyTree(
+                                        join(
+                                                anyTree(
+                                                        join(
+                                                                anyTree(PlanMatchPattern.tableScan("lineitem")
+                                                                        .withOutputRowCount(60175)),
+                                                                anyTree(
+                                                                        join(
+                                                                                anyTree(PlanMatchPattern.tableScan("orders")
+                                                                                        .withOutputRowCount(15000)),
+                                                                                anyTree(
+                                                                                        join(
+                                                                                                anyTree(PlanMatchPattern.tableScan("customer")
+                                                                                                        .withOutputRowCount(1500)),
+                                                                                                anyTree(PlanMatchPattern.tableScan("nation")
+                                                                                                        .withOutputRowCount(25)))
+                                                                                                .withOutputRowCount(60)))
+                                                                                .withOutputRowCount(909.1)))
+                                                                .withOutputRowCount(3544.9)),
+                                                anyTree(PlanMatchPattern.tableScan("supplier")
+                                                        .withOutputRowCount(100)))
+                                                .withOutputRowCount(3190.4)))
+                                .withOutputRowCount(11642.6)));
+
+        assertPlan(constraintsEnabledSession,
+                query,
+                anyTree(
+                        join(
+
+                                anyTree(
+                                        join(
+                                                anyTree(PlanMatchPattern.tableScan("lineitem")
+                                                        .withOutputRowCount(60175)),
+                                                anyTree(
+                                                        join(
+                                                                anyTree(PlanMatchPattern.tableScan("partsupp")
+                                                                        .withOutputRowCount(8000)),
+                                                                anyTree(
+                                                                        join(
+                                                                                anyTree(PlanMatchPattern.tableScan("supplier")
+                                                                                        .withOutputRowCount(100)),
+                                                                                anyTree(PlanMatchPattern.tableScan("nation")
+                                                                                        .withOutputRowCount(25)))
+                                                                                .withOutputRowCount(100)))
+                                                                .withOutputRowCount(8000)))
+                                                .withOutputRowCount(60175)),
+                                anyTree(
+                                        join(
+                                                anyTree(PlanMatchPattern.tableScan("orders")
+                                                        .withOutputRowCount(15000)),
+                                                anyTree(PlanMatchPattern.tableScan("customer")
+                                                        .withOutputRowCount(1500)))
+                                                .withOutputRowCount(15000)))
+                                .withOutputRowCount(54157.5)));
+
+        ImmutableList<String> dropConstraintStmts = ImmutableList.<String>builder()
+                .add("ALTER TABLE nation DROP CONSTRAINT nation_pk")
+                .add("ALTER TABLE partsupp DROP CONSTRAINT partsupp_pk")
+                .add("ALTER TABLE customer DROP CONSTRAINT customer_pk")
+                .add("ALTER TABLE lineitem DROP CONSTRAINT lineitem_pk")
+                .add("ALTER TABLE orders DROP CONSTRAINT orders_pk")
+                .add("ALTER TABLE supplier DROP CONSTRAINT supplier_pk")
+                .build();
+        dropConstraintStmts.forEach(stmt -> assertUpdate(getSession(), stmt));
     }
 
     private static Set<Subfield> toSubfields(String... subfieldPaths)

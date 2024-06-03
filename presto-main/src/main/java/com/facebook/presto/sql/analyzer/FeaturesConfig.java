@@ -310,6 +310,14 @@ public class FeaturesConfig
     private boolean printEstimatedStatsFromCache;
     private CreateView.Security defaultViewSecurityMode = DEFINER;
     private boolean useHistograms;
+    private CardinalityEstimationStrategyWithTableConstraints cardinalityEstimationStrategy = CardinalityEstimationStrategyWithTableConstraints.NONE;
+    public enum CardinalityEstimationStrategyWithTableConstraints
+    {
+        NONE,
+        CAP_LIMIT,
+        SEED_AND_ATTENUATE,
+        SEED_PICK_MOST_SELECTIVE_AND_ATTENUATE
+    }
 
     private boolean useNewNanDefinition = true;
     private boolean warnOnPossibleNans;
@@ -3144,6 +3152,18 @@ public class FeaturesConfig
     public FeaturesConfig setWarnOnCommonNanPatterns(boolean warnOnPossibleNans)
     {
         this.warnOnPossibleNans = warnOnPossibleNans;
+        return this;
+    }
+
+    public CardinalityEstimationStrategyWithTableConstraints getCardinalityEstimationStrategy()
+    {
+        return this.cardinalityEstimationStrategy;
+    }
+
+    @Config("optimizer.cardinality-estimation-strategy")
+    public FeaturesConfig setCardinalityEstimationStrategy(CardinalityEstimationStrategyWithTableConstraints cardinalityEstimationStrategy)
+    {
+        this.cardinalityEstimationStrategy = cardinalityEstimationStrategy;
         return this;
     }
 }

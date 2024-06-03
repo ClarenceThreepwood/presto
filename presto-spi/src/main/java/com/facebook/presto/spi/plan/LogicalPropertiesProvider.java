@@ -52,4 +52,6 @@ public interface LogicalPropertiesProvider
     LogicalProperties getDistinctLimitProperties(DistinctLimitNode limitNode);
 
     LogicalProperties getAssignUniqueIdProperties(PlanNode assignUniqueId);
+
+    LogicalProperties getExchangeProperties(PlanNode exchangeNode);
 }

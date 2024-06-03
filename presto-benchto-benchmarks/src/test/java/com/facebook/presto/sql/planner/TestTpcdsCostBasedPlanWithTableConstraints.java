@@ -14,11 +14,27 @@
 
 package com.facebook.presto.sql.planner;
 
+import com.facebook.presto.sql.analyzer.FeaturesConfig.CardinalityEstimationStrategyWithTableConstraints;
+import com.facebook.presto.sql.analyzer.FeaturesConfig.JoinDistributionType;
+import com.facebook.presto.sql.analyzer.FeaturesConfig.JoinReorderingStrategy;
+import com.google.common.collect.ImmutableMap;
+
+import static com.facebook.presto.SystemSessionProperties.CARDINALITY_ESTIMATION_STRATEGY;
+import static com.facebook.presto.SystemSessionProperties.HANDLE_COMPLEX_EQUI_JOINS;
+import static com.facebook.presto.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
+import static com.facebook.presto.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
+
 public class TestTpcdsCostBasedPlanWithTableConstraints
         extends TestTpcdsCostBasedPlan
 {
     public TestTpcdsCostBasedPlanWithTableConstraints()
     {
-        super(true);
+        super(true,
+                ImmutableMap.of(
+                        "task_concurrency", "1", // these tests don't handle exchanges from local parallel
+                        JOIN_REORDERING_STRATEGY, JoinReorderingStrategy.AUTOMATIC.name(),
+                        JOIN_DISTRIBUTION_TYPE, JoinDistributionType.AUTOMATIC.name(),
+                        HANDLE_COMPLEX_EQUI_JOINS, "true",
+                        CARDINALITY_ESTIMATION_STRATEGY, CardinalityEstimationStrategyWithTableConstraints.SEED_AND_ATTENUATE.name()));
     }
 }

@@ -31,6 +31,7 @@ import com.facebook.presto.spiller.NodeSpillConfig;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.analyzer.FeaturesConfig.AggregationIfToFilterRewriteStrategy;
 import com.facebook.presto.sql.analyzer.FeaturesConfig.AggregationPartitioningMergingStrategy;
+import com.facebook.presto.sql.analyzer.FeaturesConfig.CardinalityEstimationStrategyWithTableConstraints;
 import com.facebook.presto.sql.analyzer.FeaturesConfig.CteMaterializationStrategy;
 import com.facebook.presto.sql.analyzer.FeaturesConfig.JoinDistributionType;
 import com.facebook.presto.sql.analyzer.FeaturesConfig.JoinNotNullInferenceStrategy;
@@ -325,6 +326,7 @@ public final class SystemSessionProperties
     public static final String GENERATE_DOMAIN_FILTERS = "generate_domain_filters";
     public static final String REWRITE_EXPRESSION_WITH_CONSTANT_EXPRESSION = "rewrite_expression_with_constant_expression";
     public static final String PRINT_ESTIMATED_STATS_FROM_CACHE = "print_estimated_stats_from_cache";
+    public static final String CARDINALITY_ESTIMATION_STRATEGY = "cardinality_estimation_strategy";
 
     // TODO: Native execution related session properties that are temporarily put here. They will be relocated in the future.
     public static final String NATIVE_SIMPLIFIED_EXPRESSION_EVALUATION_ENABLED = "native_simplified_expression_evaluation_enabled";
@@ -1948,7 +1950,19 @@ public final class SystemSessionProperties
                 booleanProperty(WARN_ON_COMMON_NAN_PATTERNS,
                         "Whether to give a warning for some common issues relating to NaNs",
                         featuresConfig.getWarnOnCommonNanPatterns(),
-                        false));
+                        false),
+                new PropertyMetadata<>(
+                        CARDINALITY_ESTIMATION_STRATEGY,
+                        format("The cardinality estimation strategy to use with table constraints. Options are %s",
+                                Stream.of(CardinalityEstimationStrategyWithTableConstraints.values())
+                                        .map(CardinalityEstimationStrategyWithTableConstraints::name)
+                                        .collect(joining(","))),
+                        VARCHAR,
+                        FeaturesConfig.CardinalityEstimationStrategyWithTableConstraints.class,
+                        featuresConfig.getCardinalityEstimationStrategy(),
+                        false,
+                        value -> CardinalityEstimationStrategyWithTableConstraints.valueOf(((String) value).toUpperCase()),
+                        CardinalityEstimationStrategyWithTableConstraints::name));
     }
 
     public static boolean isSpoolingOutputBufferEnabled(Session session)
@@ -3249,5 +3263,10 @@ public final class SystemSessionProperties
     public static boolean warnOnCommonNanPatterns(Session session)
     {
         return session.getSystemProperty(WARN_ON_COMMON_NAN_PATTERNS, Boolean.class);
+    }
+
+    public static CardinalityEstimationStrategyWithTableConstraints getCardinalityEstimationStrategy(Session session)
+    {
+        return session.getSystemProperty(CARDINALITY_ESTIMATION_STRATEGY, CardinalityEstimationStrategyWithTableConstraints.class);
     }
 }

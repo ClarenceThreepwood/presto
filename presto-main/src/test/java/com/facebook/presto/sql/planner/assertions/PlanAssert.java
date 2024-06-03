@@ -14,6 +14,7 @@
 package com.facebook.presto.sql.planner.assertions;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.SystemSessionProperties;
 import com.facebook.presto.cost.CachingStatsProvider;
 import com.facebook.presto.cost.PlanCostEstimate;
 import com.facebook.presto.cost.StatsAndCosts;
@@ -21,10 +22,16 @@ import com.facebook.presto.cost.StatsCalculator;
 import com.facebook.presto.cost.StatsProvider;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.sql.planner.Plan;
 import com.facebook.presto.sql.planner.iterative.Lookup;
+import com.facebook.presto.sql.planner.iterative.Memo;
+import com.facebook.presto.sql.planner.iterative.properties.LogicalPropertiesProviderImpl;
+import com.facebook.presto.sql.relational.FunctionResolution;
 
+import java.util.Optional;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 import static com.facebook.presto.sql.planner.iterative.Lookup.noLookup;
 import static com.facebook.presto.sql.planner.iterative.Plans.resolveGroupReferences;
@@ -37,13 +44,27 @@ public final class PlanAssert
 
     public static void assertPlan(Session session, Metadata metadata, StatsCalculator statsCalculator, Plan actual, PlanMatchPattern pattern)
     {
-        StatsProvider statsProvider = new CachingStatsProvider(statsCalculator, session, actual.getTypes());
+        Optional<Memo> memo = Optional.empty();
+        Lookup lookup = noLookup();
+        if (SystemSessionProperties.isExploitConstraints(session)) {
+            Memo finalMemo = new Memo(new PlanNodeIdAllocator(), actual.getRoot(), Optional.of(new LogicalPropertiesProviderImpl(new FunctionResolution(metadata.getFunctionAndTypeManager().getFunctionAndTypeResolver()))));
+            lookup = Lookup.from(planNode -> Stream.of(finalMemo.resolve(planNode)));
+            memo = Optional.of(finalMemo);
+        }
+        StatsProvider statsProvider = new CachingStatsProvider(statsCalculator, memo, lookup, session, actual.getTypes());
         assertPlan(session, metadata, statsProvider, actual, noLookup(), pattern, Function.identity());
     }
 
     public static void assertPlanDoesNotMatch(Session session, Metadata metadata, StatsCalculator statsCalculator, Plan actual, PlanMatchPattern pattern)
     {
-        StatsProvider statsProvider = new CachingStatsProvider(statsCalculator, session, actual.getTypes());
+        Optional<Memo> memo = Optional.empty();
+        Lookup lookup = noLookup();
+        if (SystemSessionProperties.isExploitConstraints(session)) {
+            Memo finalMemo = new Memo(new PlanNodeIdAllocator(), actual.getRoot(), Optional.of(new LogicalPropertiesProviderImpl(new FunctionResolution(metadata.getFunctionAndTypeManager().getFunctionAndTypeResolver()))));
+            lookup = Lookup.from(planNode -> Stream.of(finalMemo.resolve(planNode)));
+            memo = Optional.of(finalMemo);
+        }
+        StatsProvider statsProvider = new CachingStatsProvider(statsCalculator, memo, lookup, session, actual.getTypes());
         assertPlanDoesNotMatch(session, metadata, statsProvider, actual, noLookup(), pattern, Function.identity());
     }
 

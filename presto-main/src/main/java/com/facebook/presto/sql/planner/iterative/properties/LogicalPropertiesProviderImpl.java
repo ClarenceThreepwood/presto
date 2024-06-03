@@ -31,6 +31,7 @@ import com.facebook.presto.spi.plan.ValuesNode;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.planner.iterative.GroupReference;
 import com.facebook.presto.sql.planner.plan.AssignUniqueId;
+import com.facebook.presto.sql.planner.plan.ExchangeNode;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.SemiJoinNode;
 import com.facebook.presto.sql.relational.FunctionResolution;
@@ -116,10 +117,10 @@ public class LogicalPropertiesProviderImpl
     @Override
     public LogicalProperties getFilterProperties(FilterNode filterNode)
     {
-        if (!((filterNode.getSource() instanceof GroupReference) && ((GroupReference) filterNode.getSource()).getLogicalProperties().isPresent())) {
-            throw new IllegalStateException("Expected source PlanNode to be a GroupReference with LogicalProperties");
-        }
-        LogicalPropertiesImpl sourceProperties = (LogicalPropertiesImpl) ((GroupReference) filterNode.getSource()).getLogicalProperties().get();
+        LogicalPropertiesImpl sourceProperties = filterNode.getSource() instanceof GroupReference ?
+                (LogicalPropertiesImpl) ((GroupReference) filterNode.getSource()).getLogicalProperties().get() :
+                (LogicalPropertiesImpl) filterNode.getSource().computeLogicalProperties(this);
+
         return filterProperties(sourceProperties, filterNode.getPredicate(), functionResolution);
     }
 
@@ -133,10 +134,10 @@ public class LogicalPropertiesProviderImpl
     @Override
     public LogicalProperties getProjectProperties(ProjectNode projectNode)
     {
-        if (!((projectNode.getSource() instanceof GroupReference) && ((GroupReference) projectNode.getSource()).getLogicalProperties().isPresent())) {
-            throw new IllegalStateException("Expected source PlanNode to be a GroupReference with LogicalProperties");
-        }
-        LogicalPropertiesImpl sourceProperties = (LogicalPropertiesImpl) ((GroupReference) projectNode.getSource()).getLogicalProperties().get();
+        LogicalPropertiesImpl sourceProperties = projectNode.getSource() instanceof GroupReference ?
+                (LogicalPropertiesImpl) ((GroupReference) projectNode.getSource()).getLogicalProperties().get() :
+                (LogicalPropertiesImpl) projectNode.getSource().computeLogicalProperties(this);
+
         return projectProperties(sourceProperties, projectNode.getAssignments());
     }
 
@@ -154,16 +155,14 @@ public class LogicalPropertiesProviderImpl
         }
 
         JoinNode joinNode = (JoinNode) node;
-        if (!((joinNode.getLeft() instanceof GroupReference) && ((GroupReference) joinNode.getLeft()).getLogicalProperties().isPresent())) {
-            throw new IllegalStateException("Expected left source PlanNode to be a GroupReference with LogicalProperties");
-        }
 
-        if (!((joinNode.getRight() instanceof GroupReference) && ((GroupReference) joinNode.getRight()).getLogicalProperties().isPresent())) {
-            throw new IllegalStateException("Expected right source PlanNode to be a GroupReference with LogicalProperties");
-        }
+        LogicalPropertiesImpl leftProps = joinNode.getLeft() instanceof GroupReference ?
+                (LogicalPropertiesImpl) ((GroupReference) joinNode.getLeft()).getLogicalProperties().get() :
+                (LogicalPropertiesImpl) joinNode.getLeft().computeLogicalProperties(this);
+        LogicalPropertiesImpl rightProps = joinNode.getRight() instanceof GroupReference ?
+                (LogicalPropertiesImpl) ((GroupReference) joinNode.getRight()).getLogicalProperties().get() :
+                (LogicalPropertiesImpl) joinNode.getRight().computeLogicalProperties(this);
 
-        LogicalPropertiesImpl leftProps = (LogicalPropertiesImpl) ((GroupReference) joinNode.getLeft()).getLogicalProperties().get();
-        LogicalPropertiesImpl rightProps = (LogicalPropertiesImpl) ((GroupReference) joinNode.getRight()).getLogicalProperties().get();
         return joinProperties(leftProps, rightProps, joinNode.getCriteria(), joinNode.getType(), joinNode.getFilter(), functionResolution);
     }
 
@@ -181,11 +180,11 @@ public class LogicalPropertiesProviderImpl
         }
 
         SemiJoinNode semiJoinNode = (SemiJoinNode) node;
-        if (!((semiJoinNode.getSource() instanceof GroupReference) && ((GroupReference) semiJoinNode.getSource()).getLogicalProperties().isPresent())) {
-            throw new IllegalStateException("Expected non-filtering source PlanNode to be a GroupReference with LogicalProperties");
-        }
 
-        LogicalPropertiesImpl sourceProperties = (LogicalPropertiesImpl) ((GroupReference) semiJoinNode.getSource()).getLogicalProperties().get();
+        LogicalPropertiesImpl sourceProperties = semiJoinNode.getSource() instanceof GroupReference ?
+                (LogicalPropertiesImpl) ((GroupReference) semiJoinNode.getSource()).getLogicalProperties().get() :
+                (LogicalPropertiesImpl) semiJoinNode.getSource().computeLogicalProperties(this);
+
         return propagateProperties(sourceProperties);
     }
 
@@ -199,11 +198,10 @@ public class LogicalPropertiesProviderImpl
     @Override
     public LogicalProperties getAggregationProperties(AggregationNode aggregationNode)
     {
-        if (!((aggregationNode.getSource() instanceof GroupReference) && ((GroupReference) aggregationNode.getSource()).getLogicalProperties().isPresent())) {
-            throw new IllegalStateException("Expected source PlanNode to be a GroupReference with LogicalProperties");
-        }
+        LogicalPropertiesImpl sourceProperties = aggregationNode.getSource() instanceof GroupReference ?
+                (LogicalPropertiesImpl) ((GroupReference) aggregationNode.getSource()).getLogicalProperties().get() :
+                (LogicalPropertiesImpl) aggregationNode.getSource().computeLogicalProperties(this);
 
-        LogicalPropertiesImpl sourceProperties = (LogicalPropertiesImpl) ((GroupReference) aggregationNode.getSource()).getLogicalProperties().get();
         if (aggregationNode.getGroupingKeys().isEmpty()) {
             //aggregation with no grouping variables, single row output
             return propagateAndLimitProperties(sourceProperties, Long.valueOf(1));
@@ -228,15 +226,15 @@ public class LogicalPropertiesProviderImpl
         }
 
         AssignUniqueId assignUniqueIdNode = (AssignUniqueId) node;
-        if (!((assignUniqueIdNode.getSource() instanceof GroupReference) && ((GroupReference) assignUniqueIdNode.getSource()).getLogicalProperties().isPresent())) {
-            throw new IllegalStateException("Expected source PlanNode to be a GroupReference with LogicalProperties");
-        }
 
         if (assignUniqueIdNode.getIdVariable() == null) {
             throw new IllegalStateException("AssignUniqueId should have an id variable");
         }
 
-        LogicalPropertiesImpl sourceProperties = (LogicalPropertiesImpl) ((GroupReference) assignUniqueIdNode.getSource()).getLogicalProperties().get();
+        LogicalPropertiesImpl sourceProperties = assignUniqueIdNode.getSource() instanceof GroupReference ?
+                (LogicalPropertiesImpl) ((GroupReference) assignUniqueIdNode.getSource()).getLogicalProperties().get() :
+                (LogicalPropertiesImpl) assignUniqueIdNode.getSource().computeLogicalProperties(this);
+
         Set<VariableReferenceExpression> key = new HashSet<>();
         key.add(assignUniqueIdNode.getIdVariable());
         return aggregationProperties(sourceProperties, key);
@@ -252,11 +250,10 @@ public class LogicalPropertiesProviderImpl
     @Override
     public LogicalProperties getDistinctLimitProperties(DistinctLimitNode distinctLimitNode)
     {
-        if (!((distinctLimitNode.getSource() instanceof GroupReference) && ((GroupReference) distinctLimitNode.getSource()).getLogicalProperties().isPresent())) {
-            throw new IllegalStateException("Expected source PlanNode to be a GroupReference with LogicalProperties");
-        }
+        LogicalPropertiesImpl sourceProperties = distinctLimitNode.getSource() instanceof GroupReference ?
+                (LogicalPropertiesImpl) ((GroupReference) distinctLimitNode.getSource()).getLogicalProperties().get() :
+                (LogicalPropertiesImpl) distinctLimitNode.getSource().computeLogicalProperties(this);
 
-        LogicalPropertiesImpl sourceProperties = (LogicalPropertiesImpl) ((GroupReference) distinctLimitNode.getSource()).getLogicalProperties().get();
         return distinctLimitProperties(sourceProperties,
                 distinctLimitNode.getDistinctVariables().stream().collect(Collectors.toSet()),
                 distinctLimitNode.getLimit());
@@ -271,11 +268,10 @@ public class LogicalPropertiesProviderImpl
     @Override
     public LogicalProperties getLimitProperties(LimitNode limitNode)
     {
-        if (!((limitNode.getSource() instanceof GroupReference) && ((GroupReference) limitNode.getSource()).getLogicalProperties().isPresent())) {
-            throw new IllegalStateException("Expected source PlanNode to be a GroupReference with LogicalProperties");
-        }
+        LogicalPropertiesImpl sourceProperties = limitNode.getSource() instanceof GroupReference ?
+                (LogicalPropertiesImpl) ((GroupReference) limitNode.getSource()).getLogicalProperties().get() :
+                (LogicalPropertiesImpl) limitNode.getSource().computeLogicalProperties(this);
 
-        LogicalPropertiesImpl sourceProperties = (LogicalPropertiesImpl) ((GroupReference) limitNode.getSource()).getLogicalProperties().get();
         return propagateAndLimitProperties(sourceProperties, limitNode.getCount());
     }
 
@@ -288,11 +284,10 @@ public class LogicalPropertiesProviderImpl
     @Override
     public LogicalProperties getTopNProperties(TopNNode topNNode)
     {
-        if (!((topNNode.getSource() instanceof GroupReference) && ((GroupReference) topNNode.getSource()).getLogicalProperties().isPresent())) {
-            throw new IllegalStateException("Expected left source PlanNode to be a GroupReference with LogicalProperties");
-        }
+        LogicalPropertiesImpl sourceProperties = topNNode.getSource() instanceof GroupReference ?
+                (LogicalPropertiesImpl) ((GroupReference) topNNode.getSource()).getLogicalProperties().get() :
+                (LogicalPropertiesImpl) topNNode.getSource().computeLogicalProperties(this);
 
-        LogicalPropertiesImpl sourceProperties = (LogicalPropertiesImpl) ((GroupReference) topNNode.getSource()).getLogicalProperties().get();
         return propagateAndLimitProperties(sourceProperties, topNNode.getCount());
     }
 
@@ -305,16 +300,34 @@ public class LogicalPropertiesProviderImpl
     @Override
     public LogicalProperties getSortProperties(PlanNode node)
     {
-        if (!(node instanceof SortNode)) {
-            throw new IllegalArgumentException("Expected PlanNode to be instance of SortNode");
-        }
-
         SortNode sortNode = (SortNode) node;
-        if (!((sortNode.getSource() instanceof GroupReference) && ((GroupReference) sortNode.getSource()).getLogicalProperties().isPresent())) {
-            throw new IllegalStateException("Expected source PlanNode to be a GroupReference with LogicalProperties");
-        }
 
-        LogicalPropertiesImpl sourceProperties = (LogicalPropertiesImpl) ((GroupReference) sortNode.getSource()).getLogicalProperties().get();
+        LogicalPropertiesImpl sourceProperties = sortNode.getSource() instanceof GroupReference ?
+                (LogicalPropertiesImpl) ((GroupReference) sortNode.getSource()).getLogicalProperties().get() :
+                (LogicalPropertiesImpl) sortNode.getSource().computeLogicalProperties(this);
+
+        return propagateProperties(sourceProperties);
+    }
+
+    /**
+     * Provides the logical properties for an ExchangeNode. The properties of the source are propagated without
+     * change if there is only one source, otherwise returns DEFAULT_LOGICAL_PROPERTIES
+     *
+     * @param node An instance of ExchangeNode.
+     * @return The logical properties for a ExchangeNode.
+     */
+    @Override
+    public LogicalProperties getExchangeProperties(PlanNode node)
+    {
+        ExchangeNode exchangeNode = (ExchangeNode) node;
+        if (exchangeNode.getSources().size() != 1) {
+            return getDefaultProperties();
+        }
+        PlanNode sourceNode = exchangeNode.getSources().get(0);
+        LogicalPropertiesImpl sourceProperties = sourceNode instanceof GroupReference ?
+                (LogicalPropertiesImpl) ((GroupReference) sourceNode).getLogicalProperties().get() :
+                (LogicalPropertiesImpl) sourceNode.computeLogicalProperties(this);
+
         return propagateProperties(sourceProperties);
     }
 

@@ -16,22 +16,31 @@ package com.facebook.presto.cost;
 import com.facebook.presto.Session;
 import com.facebook.presto.matching.Pattern;
 import com.facebook.presto.spi.plan.EquiJoinClause;
+import com.facebook.presto.spi.plan.LogicalProperties;
+import com.facebook.presto.spi.plan.LogicalPropertiesProvider;
+import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.planner.TypeProvider;
+import com.facebook.presto.sql.planner.iterative.GroupReference;
 import com.facebook.presto.sql.planner.iterative.Lookup;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.tree.ComparisonExpression;
 import com.facebook.presto.sql.tree.SymbolReference;
 import com.facebook.presto.util.MoreMath;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Sets;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Queue;
+import java.util.Set;
 
+import static com.facebook.presto.SystemSessionProperties.getCardinalityEstimationStrategy;
 import static com.facebook.presto.SystemSessionProperties.getDefaultJoinSelectivityCoefficient;
 import static com.facebook.presto.SystemSessionProperties.shouldOptimizerUseHistograms;
 import static com.facebook.presto.cost.DisjointRangeDomainHistogram.addConjunction;
@@ -43,6 +52,7 @@ import static com.facebook.presto.sql.planner.plan.Patterns.join;
 import static com.facebook.presto.sql.tree.ComparisonExpression.Operator.EQUAL;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Sets.difference;
 import static java.lang.Double.NaN;
 import static java.lang.Double.isNaN;
@@ -87,17 +97,20 @@ public class JoinStatsRule
     {
         PlanNodeStatsEstimate leftStats = sourceStats.getStats(node.getLeft());
         PlanNodeStatsEstimate rightStats = sourceStats.getStats(node.getRight());
-        PlanNodeStatsEstimate crossJoinStats = crossJoinStats(node, leftStats, rightStats);
+        PlanNodeStatsEstimate crossJoinStats = joinStatsUpperBound(node,
+                leftStats,
+                rightStats,
+                leftStats.getOutputRowCount() * rightStats.getOutputRowCount() /* cartesian product */);
 
         switch (node.getType()) {
             case INNER:
-                return Optional.of(computeInnerJoinStats(node, crossJoinStats, session, types));
+                return Optional.of(computeInnerJoinStats(node, sourceStats, crossJoinStats, session, types));
             case LEFT:
-                return Optional.of(computeLeftJoinStats(node, leftStats, rightStats, crossJoinStats, session, types));
+                return Optional.of(computeLeftJoinStats(node, sourceStats, leftStats, rightStats, crossJoinStats, session, types));
             case RIGHT:
-                return Optional.of(computeRightJoinStats(node, leftStats, rightStats, crossJoinStats, session, types));
+                return Optional.of(computeRightJoinStats(node, sourceStats, leftStats, rightStats, crossJoinStats, session, types));
             case FULL:
-                return Optional.of(computeFullJoinStats(node, leftStats, rightStats, crossJoinStats, session, types));
+                return Optional.of(computeFullJoinStats(node, sourceStats, leftStats, rightStats, crossJoinStats, session, types));
             default:
                 throw new IllegalStateException("Unknown join type: " + node.getType());
         }
@@ -105,6 +118,7 @@ public class JoinStatsRule
 
     private PlanNodeStatsEstimate computeFullJoinStats(
             JoinNode node,
+            StatsProvider sourceStats,
             PlanNodeStatsEstimate leftStats,
             PlanNodeStatsEstimate rightStats,
             PlanNodeStatsEstimate crossJoinStats,
@@ -114,19 +128,20 @@ public class JoinStatsRule
         PlanNodeStatsEstimate rightJoinComplementStats = calculateJoinComplementStats(node.getFilter(), flippedCriteria(node), rightStats, leftStats);
         return addJoinComplementStats(
                 rightStats,
-                computeLeftJoinStats(node, leftStats, rightStats, crossJoinStats, session, types),
+                computeLeftJoinStats(node, sourceStats, leftStats, rightStats, crossJoinStats, session, types),
                 rightJoinComplementStats);
     }
 
     private PlanNodeStatsEstimate computeLeftJoinStats(
             JoinNode node,
+            StatsProvider sourceStats,
             PlanNodeStatsEstimate leftStats,
             PlanNodeStatsEstimate rightStats,
             PlanNodeStatsEstimate crossJoinStats,
             Session session,
             TypeProvider types)
     {
-        PlanNodeStatsEstimate innerJoinStats = computeInnerJoinStats(node, crossJoinStats, session, types);
+        PlanNodeStatsEstimate innerJoinStats = computeInnerJoinStats(node, sourceStats, crossJoinStats, session, types);
         PlanNodeStatsEstimate leftJoinComplementStats = calculateJoinComplementStats(node.getFilter(), node.getCriteria(), leftStats, rightStats);
         return addJoinComplementStats(
                 leftStats,
@@ -136,13 +151,14 @@ public class JoinStatsRule
 
     private PlanNodeStatsEstimate computeRightJoinStats(
             JoinNode node,
+            StatsProvider sourceStats,
             PlanNodeStatsEstimate leftStats,
             PlanNodeStatsEstimate rightStats,
             PlanNodeStatsEstimate crossJoinStats,
             Session session,
             TypeProvider types)
     {
-        PlanNodeStatsEstimate innerJoinStats = computeInnerJoinStats(node, crossJoinStats, session, types);
+        PlanNodeStatsEstimate innerJoinStats = computeInnerJoinStats(node, sourceStats, crossJoinStats, session, types);
         PlanNodeStatsEstimate rightJoinComplementStats = calculateJoinComplementStats(node.getFilter(), flippedCriteria(node), rightStats, leftStats);
         return addJoinComplementStats(
                 rightStats,
@@ -150,7 +166,7 @@ public class JoinStatsRule
                 rightJoinComplementStats);
     }
 
-    private PlanNodeStatsEstimate computeInnerJoinStats(JoinNode node, PlanNodeStatsEstimate crossJoinStats, Session session, TypeProvider types)
+    private PlanNodeStatsEstimate computeInnerJoinStats(JoinNode node, StatsProvider sourceStats, PlanNodeStatsEstimate crossJoinStats, Session session, TypeProvider types)
     {
         List<EquiJoinClause> equiJoinCriteria = node.getCriteria();
 
@@ -162,7 +178,8 @@ public class JoinStatsRule
             return filterStatsCalculator.filterStats(crossJoinStats, node.getFilter().get(), session);
         }
 
-        PlanNodeStatsEstimate equiJoinEstimate = filterByEquiJoinClauses(crossJoinStats, node.getCriteria(), session, types);
+        PlanNodeStatsEstimate equiJoinEstimate = filterByEquiJoinClauses(node, sourceStats, crossJoinStats, session, types);
+
         if (equiJoinEstimate.isOutputRowCountUnknown()) {
             double defaultJoinSelectivityFactor = getDefaultJoinSelectivityCoefficient(session);
             if (Double.compare(defaultJoinSelectivityFactor, DEFAULT_JOIN_SELECTIVITY_DISABLED) != 0) {
@@ -186,7 +203,138 @@ public class JoinStatsRule
         return filteredEquiJoinEstimate;
     }
 
-    private PlanNodeStatsEstimate filterByEquiJoinClauses(
+    // If either input to an inner join contains a distinct key, then the output cardinality is at most the
+    // cardinality of the complementary input. After establishing this upper bound, the remaining
+    // clauses/predicates are used to heuristically scale the estimated cardinality of the join
+    // e.g. for [t1 join t2 where t1.a1=t2.a2 and t1.b1=t2.b2 and t1.c1=t2.c2]
+    // if (a1, b1) forms a distinct key, then the output cardinality is estimated to be
+    //                CARD(t2) * UNKNOWN_FILTER_COEFFICIENT
+    // UNKNOWN_FILTER_COEFFICIENT is the heuristic to account for the join key (c1=c2))
+    private PlanNodeStatsEstimate filterByEquiJoinClauses(JoinNode node, StatsProvider sourceStats, PlanNodeStatsEstimate crossJoinStats, Session session, TypeProvider types)
+    {
+        Optional<JoinKeysPartitionedByDistinct> joinKeysPartitionedByDistinctOptional = partitionEquiJoinClausesByDistinctKeys(node, sourceStats);
+        PlanNodeStatsEstimate statsEstimate = pickMostSelectivePredicateAndFilterByEquiJoinClauses(crossJoinStats, node.getCriteria(), session, types);
+        if (!joinKeysPartitionedByDistinctOptional.isPresent()) {
+            return statsEstimate;
+        }
+
+        JoinKeysPartitionedByDistinct joinKeysPartitionedByDistinct = joinKeysPartitionedByDistinctOptional.get();
+        switch (getCardinalityEstimationStrategy(session)) {
+            case CAP_LIMIT:
+                if (joinKeysPartitionedByDistinct.getJoinStatsUpperBound().getOutputRowCount() < statsEstimate.getOutputRowCount()) {
+                    return statsEstimate.mapOutputRowCount(rowCount -> joinKeysPartitionedByDistinct.getJoinStatsUpperBound().getOutputRowCount());
+                }
+                break;
+            case SEED_AND_ATTENUATE:
+                return filterByRemainingEquiJoinClauses(joinKeysPartitionedByDistinct.getJoinStatsUpperBound(), joinKeysPartitionedByDistinct.getRemainingClauses(), session);
+            case SEED_PICK_MOST_SELECTIVE_AND_ATTENUATE:
+                return joinKeysPartitionedByDistinct.getRemainingClauses().isEmpty() ?
+                        joinKeysPartitionedByDistinct.getJoinStatsUpperBound() :
+                        pickMostSelectivePredicateAndFilterByEquiJoinClauses(joinKeysPartitionedByDistinct.getJoinStatsUpperBound(),
+                                joinKeysPartitionedByDistinct.getRemainingClauses(),
+                                session,
+                                types);
+//            case NONE:
+//            default:
+//                return statsEstimate;
+        }
+//        Optional<JoinKeysPartitionedByDistinct> joinKeysPartitionedByDistinct = partitionEquiJoinClausesByDistinctKeys(node, sourceStats);
+//        if (!joinKeysPartitionedByDistinct.isPresent()) {
+//            return pickMostSelectivePredicateAndFilterByEquiJoinClauses(crossJoinStats, node.getCriteria(), session, types);
+//        }
+//
+//        return filterByRemainingEquiJoinClauses(joinKeysPartitionedByDistinct.get().getJoinStatsUpperBound(), joinKeysPartitionedByDistinct.get().getRemainingClauses());
+        return statsEstimate;
+    }
+
+    private Optional<JoinKeysPartitionedByDistinct> partitionEquiJoinClausesByDistinctKeys(JoinNode node, StatsProvider sourceStats)
+    {
+        if (!(sourceStats instanceof CachingStatsProvider) ||
+                !((CachingStatsProvider) sourceStats).getMemo().isPresent()) {
+            return Optional.empty();
+        }
+
+        Optional<LogicalPropertiesProvider> logicalPropertiesProviderOptional = ((CachingStatsProvider) sourceStats).getMemo().get().getLogicalPropertiesProvider();
+        if (!logicalPropertiesProviderOptional.isPresent()) {
+            return Optional.empty();
+        }
+
+        LogicalPropertiesProvider logicalPropertiesProvider = logicalPropertiesProviderOptional.get();
+        LogicalProperties joinRightInputLogicalProperties = getOrComputeLogicalProperties(node.getRight(), logicalPropertiesProvider);
+        LogicalProperties joinLeftInputLogicalProperties = getOrComputeLogicalProperties(node.getLeft(), logicalPropertiesProvider);
+
+        if (joinRightInputLogicalProperties.isDistinct(extractJoinKeys(node, true))) {
+            return Optional.of(partitionJoinKeys(node, sourceStats, joinRightInputLogicalProperties, true));
+        }
+
+        if (joinLeftInputLogicalProperties.isDistinct(extractJoinKeys(node, false))) {
+            return Optional.of(partitionJoinKeys(node, sourceStats, joinLeftInputLogicalProperties, false));
+        }
+
+        return Optional.empty();
+    }
+
+    private LogicalProperties getOrComputeLogicalProperties(PlanNode node, LogicalPropertiesProvider logicalPropertiesProvider)
+    {
+        if (node instanceof GroupReference) {
+            return ((GroupReference) node).getLogicalProperties().get();
+        }
+
+        return node.computeLogicalProperties(logicalPropertiesProvider);
+    }
+
+    private JoinKeysPartitionedByDistinct partitionJoinKeys(
+            JoinNode node,
+            StatsProvider sourceStats,
+            LogicalProperties logicalProperties,
+            boolean right)
+    {
+        List<EquiJoinClause> remainingClauses = new ArrayList<>(node.getCriteria());
+        ImmutableSet<VariableReferenceExpression> joinKeys = extractJoinKeys(node, right);
+        PlanNodeStatsEstimate leftStats = sourceStats.getStats(node.getLeft());
+        PlanNodeStatsEstimate rightStats = sourceStats.getStats(node.getRight());
+        double upperBound = right ? leftStats.getOutputRowCount() : rightStats.getOutputRowCount();
+
+        PlanNodeStatsEstimate innerJoinStatsUpperBound = joinStatsUpperBound(node, leftStats, rightStats, upperBound);
+        Set<VariableReferenceExpression> distinctKey = getDistinctKeyFromVariables(joinKeys, logicalProperties);
+        List<EquiJoinClause> drivingClause = extractDrivingClauseFromDistinctKey(remainingClauses, distinctKey, right);
+        remainingClauses.removeAll(drivingClause);
+        return new JoinKeysPartitionedByDistinct(innerJoinStatsUpperBound, drivingClause, remainingClauses);
+    }
+
+    private ImmutableSet<VariableReferenceExpression> extractJoinKeys(JoinNode node, boolean fromRightInput)
+    {
+        return node.getCriteria().stream()
+                .map(equiJoinClause -> fromRightInput ? equiJoinClause.getRight() : equiJoinClause.getLeft())
+                .collect(toImmutableSet());
+    }
+
+    // Realistically it is unlikely that the number of join keys is going to explode
+    // TODO: optimize/early return/abandon this if it becomes too expensive
+    public static Set<VariableReferenceExpression> getDistinctKeyFromVariables(Set<VariableReferenceExpression> variables, LogicalProperties sourceLogicalProperties)
+    {
+        for (int i = 1; i <= variables.size(); i++) {
+            Set<Set<VariableReferenceExpression>> combinationsOfSizeN = Sets.combinations(variables, i);
+            for (Set<VariableReferenceExpression> possibleKey : combinationsOfSizeN) {
+                if (sourceLogicalProperties.isDistinct(possibleKey)) {
+                    return ImmutableSet.copyOf(possibleKey);
+                }
+            }
+        }
+
+        throw new IllegalStateException("Cannot find distinct key");
+    }
+
+    private List<EquiJoinClause> extractDrivingClauseFromDistinctKey(List<EquiJoinClause> joinCriteria, Set<VariableReferenceExpression> distinctKeyFromJoinKeys, boolean fromRightInput)
+    {
+        return joinCriteria.stream()
+                .filter(equiJoinClause -> fromRightInput ?
+                        distinctKeyFromJoinKeys.contains(equiJoinClause.getRight()) :
+                        distinctKeyFromJoinKeys.contains(equiJoinClause.getLeft()))
+                .collect(toImmutableList());
+    }
+
+    private PlanNodeStatsEstimate pickMostSelectivePredicateAndFilterByEquiJoinClauses(
             PlanNodeStatsEstimate stats,
             Collection<EquiJoinClause> clauses,
             Session session,
@@ -201,7 +349,8 @@ public class JoinStatsRule
         Queue<EquiJoinClause> remainingClauses = new LinkedList<>(clauses);
         EquiJoinClause drivingClause = remainingClauses.poll();
         for (int i = 0; i < clauses.size(); i++) {
-            PlanNodeStatsEstimate estimate = filterByEquiJoinClauses(stats, drivingClause, remainingClauses, session, types);
+            PlanNodeStatsEstimate filteredStats = calculateEstimateForDrivingClause(stats, drivingClause, session, types);
+            PlanNodeStatsEstimate estimate = filterByRemainingEquiJoinClauses(filteredStats, remainingClauses, session);
             if (result.isOutputRowCountUnknown() || (!estimate.isOutputRowCountUnknown() && estimate.getOutputRowCount() < result.getOutputRowCount())) {
                 result = estimate;
             }
@@ -212,20 +361,25 @@ public class JoinStatsRule
         return result;
     }
 
-    private PlanNodeStatsEstimate filterByEquiJoinClauses(
-            PlanNodeStatsEstimate stats,
-            EquiJoinClause drivingClause,
-            Collection<EquiJoinClause> remainingClauses,
-            Session session,
-            TypeProvider types)
+    private PlanNodeStatsEstimate filterByRemainingEquiJoinClauses(PlanNodeStatsEstimate stats, Collection<EquiJoinClause> clauses, Session session)
     {
-        ComparisonExpression drivingPredicate = new ComparisonExpression(EQUAL, new SymbolReference(getNodeLocation(drivingClause.getLeft().getSourceLocation()), drivingClause.getLeft().getName()), new SymbolReference(getNodeLocation(drivingClause.getRight().getSourceLocation()), drivingClause.getRight().getName()));
-        PlanNodeStatsEstimate filteredStats = filterStatsCalculator.filterStats(stats, drivingPredicate, session, types);
         boolean useHistograms = shouldOptimizerUseHistograms(session);
-        for (EquiJoinClause clause : remainingClauses) {
+        PlanNodeStatsEstimate filteredStats = stats;
+        for (EquiJoinClause clause : clauses) {
             filteredStats = filterByAuxiliaryClause(filteredStats, clause, useHistograms);
         }
         return filteredStats;
+    }
+
+    private PlanNodeStatsEstimate calculateEstimateForDrivingClause(PlanNodeStatsEstimate stats, EquiJoinClause drivingClause, Session session, TypeProvider types)
+    {
+        ComparisonExpression drivingPredicate = new ComparisonExpression(EQUAL,
+                new SymbolReference(getNodeLocation(drivingClause.getLeft().getSourceLocation()),
+                        drivingClause.getLeft().getName()),
+                new SymbolReference(getNodeLocation(drivingClause.getRight().getSourceLocation()),
+                        drivingClause.getRight().getName()));
+
+        return filterStatsCalculator.filterStats(stats, drivingPredicate, session, types);
     }
 
     private PlanNodeStatsEstimate filterByAuxiliaryClause(PlanNodeStatsEstimate stats, EquiJoinClause clause, boolean useHistograms)
@@ -410,10 +564,10 @@ public class JoinStatsRule
         return outputStats.build();
     }
 
-    private PlanNodeStatsEstimate crossJoinStats(JoinNode node, PlanNodeStatsEstimate leftStats, PlanNodeStatsEstimate rightStats)
+    private PlanNodeStatsEstimate joinStatsUpperBound(JoinNode node, PlanNodeStatsEstimate leftStats, PlanNodeStatsEstimate rightStats, double outputRowCount)
     {
         PlanNodeStatsEstimate.Builder builder = PlanNodeStatsEstimate.builder()
-                .setOutputRowCount(leftStats.getOutputRowCount() * rightStats.getOutputRowCount());
+                .setOutputRowCount(outputRowCount);
 
         node.getLeft().getOutputVariables().forEach(variable -> builder.addVariableStatistics(variable, leftStats.getVariableStatistics(variable)));
         node.getRight().getOutputVariables().forEach(variable -> builder.addVariableStatistics(variable, rightStats.getVariableStatistics(variable)));
@@ -426,5 +580,38 @@ public class JoinStatsRule
         return node.getCriteria().stream()
                 .map(EquiJoinClause::flip)
                 .collect(toImmutableList());
+    }
+
+    private class JoinKeysPartitionedByDistinct
+    {
+        private PlanNodeStatsEstimate joinStatsUpperBound;
+
+        private List<EquiJoinClause> clausesWithDistinctKeys;
+        private List<EquiJoinClause> remainingClauses;
+
+        private JoinKeysPartitionedByDistinct(
+                PlanNodeStatsEstimate joinStatsUpperBound,
+                List<EquiJoinClause> clausesWithDistinctKeys,
+                List<EquiJoinClause> remainingClauses)
+        {
+            this.joinStatsUpperBound = joinStatsUpperBound;
+            this.clausesWithDistinctKeys = clausesWithDistinctKeys;
+            this.remainingClauses = remainingClauses;
+        }
+
+        private PlanNodeStatsEstimate getJoinStatsUpperBound()
+        {
+            return joinStatsUpperBound;
+        }
+
+        public List<EquiJoinClause> getClausesWithDistinctKeys()
+        {
+            return clausesWithDistinctKeys;
+        }
+
+        public List<EquiJoinClause> getRemainingClauses()
+        {
+            return remainingClauses;
+        }
     }
 }

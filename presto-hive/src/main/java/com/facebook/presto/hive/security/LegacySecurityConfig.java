@@ -18,13 +18,13 @@ import com.facebook.airlift.configuration.ConfigDescription;
 
 public class LegacySecurityConfig
 {
-    private boolean allowAddColumn;
-    private boolean allowDropColumn;
-    private boolean allowDropTable;
-    private boolean allowRenameTable;
-    private boolean allowRenameColumn;
-    private boolean allowDropConstraint;
-    private boolean allowAddConstraint;
+    private boolean allowAddColumn = true;
+    private boolean allowDropColumn = true;
+    private boolean allowDropTable = true;
+    private boolean allowRenameTable = true;
+    private boolean allowRenameColumn = true;
+    private boolean allowDropConstraint = true;
+    private boolean allowAddConstraint = true;
 
     public boolean getAllowAddColumn()
     {
